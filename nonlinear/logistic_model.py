@@ -179,7 +179,7 @@ class LogisticModel():
 
 
 if __name__ == '__main__':
-    f = 'test_data.tsv'
+    f = 'test_data.logistic_model.tsv'
     df = pd.read_table(f).iloc[:100]
     X = np.array([df['T'].to_numpy()]).T
     Y = np.array([df['Y'].to_numpy()]).T

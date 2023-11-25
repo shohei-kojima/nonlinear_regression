@@ -1,2 +1,2 @@
-# nonlinear_regression
+# regressions
 Just a repo for myself
