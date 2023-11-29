@@ -60,6 +60,8 @@ class OLS():
         self.popt = None
         self.pcov = None
         self.dof = None
+        self.F = None
+        self.P = None
     
     def pred_ci(self, X = None, alpha = 0.05):
         if X is None:
@@ -110,6 +112,12 @@ class OLS():
     
     def bse(self):
         return np.sqrt(np.diag(self.pcov))
+    
+    def f_test(self):
+        F = ((self.popt.T / self.bse())[0]) ** 2
+        P = st.f.sf(F, 1, self.dof)
+        self.F = F
+        self.P = P
     
     def fit(self, X, Y):
         self.X = X
