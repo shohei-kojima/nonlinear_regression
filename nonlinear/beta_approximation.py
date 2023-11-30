@@ -40,7 +40,7 @@ class BetaApproximation():
     
     # Func specific for Y ~ X without intercept,
     # where X.shape = (n_var, n_indiv, 1); Y.shape = (n_indiv, n_permut).
-    # Returns minimum P across variants.
+    # Returns minimum P (= max F) across variants.
     def ols_f(self, Y):
         # invXTXaXT.shape = (n_var, 1, n_indiv)
         X, invXTX, invXTXaXT = self.reshaped_X
@@ -53,10 +53,8 @@ class BetaApproximation():
         sigmasq = []
         for i in range(X.shape[0]):
             sigmasq.append(np.square(X[i] @ popt[i] - Y).sum(0) / self.actual_dof)
-        sigmasq = np.array(sigmasq)
-        pcov = sigmasq.T * np.squeeze(invXTX)
-        s = pcov.shape
-        F = np.max((popt / np.sqrt(pcov.T.reshape(s[1], 1, s[0]))) ** 2, axis = 0)
+        pcov = np.array(sigmasq).T * np.squeeze(invXTX)
+        F = np.max((popt / np.sqrt(pcov.T.reshape(*popt.shape))) ** 2, axis = 0)
         P = st.f.sf(F, 1, self.actual_dof)
         return P
     
