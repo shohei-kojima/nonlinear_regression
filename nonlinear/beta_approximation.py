@@ -4,43 +4,12 @@
 Author: Shohei Kojima @ RIKEN
 """
 
-class OLS():
-    def __init__(self):
-        self.X = None
-        self.Y = None
-        self.popt = None
-        self.pcov = None
-        self.dof = None
-        self.F = None
-        self.W = None
-        self.P = None
-    
-    def ols(self):
-        X = self.X
-        Y = self.Y
-        invXTX = np.linalg.inv(X.T @ X)
-        popt = invXTX @ X.T @ Y
-        dof = X.shape[0] - X.shape[1]
-        sigmasq = np.square(X @ popt - Y).sum() / dof
-        self.popt = popt
-        self.pcov = sigmasq * invXTX
-        self.dof = dof
-    
-    def bse(self):
-        return np.sqrt(np.diag(self.pcov))
-    
-    def f_test(self):
-        F = ((self.popt.T / self.bse())[0]) ** 2
-        P = st.f.sf(F, 1, self.dof)
-        self.F = F
-        self.P = P
-    
-    def fit(self, X, Y):
-        self.X = X
-        self.Y = Y
-        self.ols()
-    
-    
+import numpy as np
+import scipy.stats as st
+import scipy.optimize as opt
+from scipy.special import loggamma
+
+
 class BetaApproximation():
     def __init__(self):
         self.X_orig = None
@@ -48,31 +17,60 @@ class BetaApproximation():
         self.X = None
         self.Y = None
         self.n_var = None
+        self.reshaped_X = None
         self.actual_dof = None
         self.nominal_p = None
+        self.min_ps = None
         self.a = None
         self.b = None
-        self.beta_approx_p = None
+        self.empirical_p = None
+        
+    def reshape_X(self):
+        Xs = []
+        invXTXs = []
+        invXTXaXTs = []
+        for i in range(self.n_var):
+            X = self.X[:,i:i+1]
+            invXTX = np.linalg.inv(X.T @ X)
+            invXTXaXT = invXTX @ X.T
+            Xs.append(X)
+            invXTXs.append(invXTX)
+            invXTXaXTs.append(invXTXaXT)
+        t = (np.array(Xs), np.array(invXTXs), np.array(invXTXaXTs))
+        self.reshaped_X = t
     
-    def ols_f(self, X, Y):
-        invXTX = np.linalg.inv(X.T @ X)
-        popt = invXTX @ X.T @ Y
-        sigmasq = np.square(X @ popt - Y).sum() / self.actual_dof
-        pcov = sigmasq * invXTX
-        F = ((popt.T / np.sqrt(np.diag(pcov)))[0]) ** 2
+    # Func specific for Y ~ X without intercept,
+    # where X.shape = (n_var, n_indiv, 1); Y.shape = (n_indiv, n_permut).
+    # Returns minimum P across variants.
+    def ols_f(self, Y):
+        # invXTXaXT.shape = (n_var, 1, n_indiv)
+        X, invXTX, invXTXaXT = self.reshaped_X
+        # popt.shape = (n_var, 1, n_permut)
+        # sigmasq.shape = (n_var, n_permut)
+        # pcov.shape = (n_permut, n_var)
+        popt = np.tensordot(invXTXaXT, Y, axes = ([2], [0]))
+        # below is the same as: np.square(X @ popt - Y).sum(1) / self.actual_dof
+        # but can process with lower memory
+        sigmasq = []
+        for i in range(X.shape[0]):
+            sigmasq.append(np.square(X[i] @ popt[i] - Y).sum(0) / self.actual_dof)
+        sigmasq = np.array(sigmasq)
+        pcov = sigmasq.T * np.squeeze(invXTX)
+        s = pcov.shape
+        F = np.max((popt / np.sqrt(pcov.T.reshape(s[1], 1, s[0]))) ** 2, axis = 0)
         P = st.f.sf(F, 1, self.actual_dof)
         return P
     
     def residual(self, C, Y):
         C = np.hstack((np.ones((C.shape[0], 1)).reshape(-1, 1), C))
-        model = OLS()
-        model.fit(C, Y)
-        return Y - C @ model.popt
+        invXTX = np.linalg.inv(C.T @ C)
+        popt = invXTX @ C.T @ Y
+        return Y - C @ popt
     
     @staticmethod
     def beta_log_likelihood(x, a, b):
-        """negative log-likelihood of beta distribution"""
-        #https://github.com/broadinstitute/tensorqtl/blob/9857a3c6b15d2e2eed40d9aefd1af4c678b21edd/tensorqtl/core.py#L332
+        # negative log-likelihood of beta distribution
+        # https://github.com/broadinstitute/tensorqtl/blob/9857a3c6b15d2e2eed40d9aefd1af4c678b21edd/tensorqtl/core.py#L332
         logbeta = loggamma(a) + loggamma(b) - loggamma(a+b)
         return (1.0-a)*np.sum(np.log(x)) + (1.0-b)*np.sum(np.log(1.0-x)) + len(x)*logbeta
     
@@ -82,31 +80,35 @@ class BetaApproximation():
         a = mean * (mean * (1 - mean) / var - 1)
         b = a * (1/mean - 1)
         res = opt.minimize(
-            lambda s: self.beta_log_likelihood(self.min_ps, s[0], s[1]), [a, b],
+            lambda p: self.beta_log_likelihood(self.min_ps, *p), (a, b),
             method = 'Nelder-Mead',
         )
         self.a = res.x[0]
         self.b = res.x[1]
     
-    def calc_beta_approx_p(self):
-        self.beta_approx_p = st.beta.cdf(self.nominal_p, self.a, self.b)
+    def calc_empirical_p(self):
+        self.empirical_p = st.beta.cdf(self.nominal_p, self.a, self.b)
     
     def calc_nominal_p(self):
-        ps = []
-        for i in range(self.n_var):
-            ps.append(self.ols_f(self.X[:,i:i+1], self.Y))
-        self.nominal_p = min(ps)
+        self.nominal_p = self.ols_f(self.Y)
     
     def calc_permut_p(self, n_permut = 10000):
-        min_ps = []
         index = np.arange(self.Y.shape[0])
+        permut_Ys = []
         for _ in range(n_permut):
             permut_Y = self.Y[np.random.permutation(index)]
-            ps = []
-            for i in range(self.n_var):
-                ps.append(self.ols_f(self.X[:,i:i+1], permut_Y))
-            min_ps.append(min(ps))
-        self.min_ps = np.array(min_ps)
+            permut_Ys.append(permut_Y)
+        permut_Ys = np.hstack(permut_Ys)
+        self.min_ps = self.ols_f(permut_Ys)[0]
+    
+    def print_result(self):
+        text = ''
+        text += 'n_var = %d, n_indiv = %d\n' % (self.n_var, self.Y.shape[0])
+        text += 'Params: a = %.4f, b = %.4f\n' % (self.a, self.b)
+        text += 'Nominal   P: %.10f (non-corrected)\n' % self.nominal_p
+        text += 'Nominal   P: %.10f (Bonferroni corrected)\n' % (min(self.nominal_p * self.n_var, 1.0))
+        text += 'Empirical P: %.10f\n' % self.empirical_p
+        print(text)
     
     def beta_approximation(self, X, Y, C):
         self.X_orig = X
@@ -117,25 +119,25 @@ class BetaApproximation():
         self.Y = Y
         self.n_var = self.X.shape[1]
         self.actual_dof = X.shape[0] - C.shape[1] - 1
+        self.reshape_X()
         self.calc_nominal_p()
         self.calc_permut_p()
         self.fit_beta()
-        self.calc_beta_approx_p()
-
+        self.calc_empirical_p()
 
 
 
 if __name__ == '__main__':
     # 10 SNVs, AF = 0.5, n_sample = 40
     X = []
-    for _ in range(3):
+    for _ in range(3000):
         X.append([
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
         ])
-    for _ in range(8):
+    for _ in range(8000):
         X.append([
             0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0,
             1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0,
@@ -143,7 +145,7 @@ if __name__ == '__main__':
             1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0,
         ])
     X = np.array(X).T
-
+    
     # phenotype
     # genotype 0: np.random.normal(30, 5, 10)
     # genotype 1: np.random.normal(35, 5, 20)
@@ -164,9 +166,4 @@ if __name__ == '__main__':
 
     model = BetaApproximation()
     model.beta_approximation(X, Y, C)
-
-    print(model.a)
-    print(model.b)
-    print(model.nominal_p, model.n_var)
-    print(model.beta_approx_p)
-
+    model.print_result()
