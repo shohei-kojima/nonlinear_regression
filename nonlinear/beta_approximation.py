@@ -12,11 +12,10 @@ from scipy.special import loggamma
 
 class BetaApproximation():
     def __init__(self):
-        self.X_orig = None
-        self.Y_orig = None
         self.X = None
         self.Y = None
         self.n_var = None
+        self.n_permut = None
         self.reshaped_X = None
         self.actual_dof = None
         self.nominal_p = None
@@ -24,7 +23,7 @@ class BetaApproximation():
         self.a = None
         self.b = None
         self.empirical_p = None
-        
+    
     def reshape_X(self):
         Xs = []
         invXTXs = []
@@ -48,7 +47,7 @@ class BetaApproximation():
         # popt.shape = (n_var, 1, n_permut)
         # sigmasq.shape = (n_var, n_permut)
         # pcov.shape = (n_permut, n_var)
-        popt = np.tensordot(invXTXaXT, Y, axes = ([2], [0]))
+        popt = np.tensordot(invXTXaXT, Y, axes = (2, 0))
         # below is the same as: np.square(X @ popt - Y).sum(1) / self.actual_dof
         # but can process with lower memory
         sigmasq = []
@@ -92,10 +91,10 @@ class BetaApproximation():
     def calc_nominal_p(self):
         self.nominal_p = self.ols_f(self.Y)
     
-    def calc_permut_p(self, n_permut = 10000):
+    def calc_permut_p(self):
         index = np.arange(self.Y.shape[0])
         permut_Ys = []
-        for _ in range(n_permut):
+        for _ in range(self.n_permut):
             permut_Y = self.Y[np.random.permutation(index)]
             permut_Ys.append(permut_Y)
         permut_Ys = np.hstack(permut_Ys)
@@ -107,12 +106,14 @@ class BetaApproximation():
         text += 'Params: a = %.4f, b = %.4f\n' % (self.a, self.b)
         text += 'Nominal   P: %.10f (non-corrected)\n' % self.nominal_p
         text += 'Nominal   P: %.10f (Bonferroni corrected)\n' % (min(self.nominal_p * self.n_var, 1.0))
-        text += 'Empirical P: %.10f\n' % self.empirical_p
+        text += 'Empirical P: %.10f (Beta approximation)\n' % self.empirical_p
         print(text)
     
-    def beta_approximation(self, X, Y, C):
-        self.X_orig = X
-        self.Y_orig = Y
+    # X: Genotypes, ranging from 0 to 2; shape = (n_indiv, n_var)
+    # Y: Phenotype, shape = (n_indiv, 1)
+    # C: Covariates, shape = (n_indiv, n_cov)
+    def beta_approximation(self, X, Y, C, n_permut = 10000):
+        self.n_permut = n_permut
         X = st.zscore(X, axis = 0)
         Y = st.zscore(self.residual(C, Y))
         self.X = X
