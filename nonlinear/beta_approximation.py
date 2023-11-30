@@ -6,8 +6,6 @@ Author: Shohei Kojima @ RIKEN
 
 import numpy as np
 import scipy.stats as st
-import scipy.optimize as opt
-from scipy.special import loggamma
 
 
 class BetaApproximation():
@@ -64,24 +62,17 @@ class BetaApproximation():
         popt = invXTX @ C.T @ Y
         return Y - C @ popt
     
-    @staticmethod
-    def beta_log_likelihood(x, a, b):
-        # negative log-likelihood of beta distribution
-        # https://github.com/broadinstitute/tensorqtl/blob/9857a3c6b15d2e2eed40d9aefd1af4c678b21edd/tensorqtl/core.py#L332
-        logbeta = loggamma(a) + loggamma(b) - loggamma(a+b)
-        return (1.0-a)*np.sum(np.log(x)) + (1.0-b)*np.sum(np.log(1.0-x)) + len(x)*logbeta
-    
     def fit_beta(self):
-        mean = np.mean(self.min_ps)
-        var =  np.var(self.min_ps)
-        a = mean * (mean * (1 - mean) / var - 1)
-        b = a * (1/mean - 1)
-        res = opt.minimize(
-            lambda p: self.beta_log_likelihood(self.min_ps, *p), (a, b),
-            method = 'Nelder-Mead',
-        )
-        self.a = res.x[0]
-        self.b = res.x[1]
+        '''
+        Negative log-likelihood is:
+            (1.0-a)*np.sum(np.log(x)) + (1.0-b)*np.sum(np.log(1.0-x)) + len(x)*logbeta,
+            where logbeta = loggamma(a) + loggamma(b) - loggamma(a+b).
+        See: https://github.com/broadinstitute/tensorqtl/blob/9857a3c6b15d2e2eed40d9aefd1af4c678b21edd/tensorqtl/core.py#L332
+        '''
+        # prior of parameters (a, b) will be calculated internally in the fit() func.
+        res = st.beta.fit(self.min_ps, floc = 0, fscale = 1, method = 'MLE')
+        self.a = res[0]
+        self.b = res[1]
     
     def calc_empirical_p(self):
         self.empirical_p = st.beta.cdf(self.nominal_p, self.a, self.b)
