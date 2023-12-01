@@ -4,8 +4,11 @@
 Author: Shohei Kojima @ RIKEN
 """
 
+import os
+os.environ['OMP_NUM_THREADS'] = '1'
 import numpy as np
 import scipy.stats as st
+from numba import jit
 
 
 class BetaApproximation():
@@ -33,26 +36,41 @@ class BetaApproximation():
             Xs.append(X)
             invXTXs.append(invXTX)
             invXTXaXTs.append(invXTXaXT)
-        t = (np.array(Xs), np.array(invXTXs), np.array(invXTXaXTs))
+        t = (np.array(Xs), np.squeeze(np.array(invXTXs)), np.array(invXTXaXTs))
         self.reshaped_X = t
+    
+    @staticmethod
+    @jit('f8[:](i8,i8,f8[:,:,:],f8[:],f8[:,:,:],f8[:,:],i8,i8)', nopython = True)
+    def ols_core(n_var, n_permut, X, invXTX, invXTXaXT, Y, dof, n_chunk):
+        # X.shape = (n_var, n_indiv, 1)
+        # invXTX.shape = (n_var)
+        # invXTXaXT.shape = (n_var, 1, n_indiv)
+        F = np.zeros((n_chunk, n_permut))
+        for i in range(n_var):
+            mod = i % n_chunk
+            popt = invXTXaXT[i] @ Y
+            sigmasq = np.square(X[i] @ popt - Y).sum(0) / dof
+            F[mod+1,:] = np.square(popt[0,:] / np.sqrt(sigmasq * invXTX[i]))
+            if mod == 0:
+                for j in range(n_permut):
+                    F[0,j] = np.max(F[:,j])
+        for j in range(n_permut):
+            F[0,j] = np.max(F[:,j])
+        return F[0]
     
     # Func specific for Y ~ X without intercept,
     # where X.shape = (n_var, n_indiv, 1); Y.shape = (n_indiv, n_permut).
-    # Returns minimum P (= max F) across variants.
-    def ols_f(self, Y):
-        # invXTXaXT.shape = (n_var, 1, n_indiv)
-        X, invXTX, invXTXaXT = self.reshaped_X
-        # popt.shape = (n_var, 1, n_permut)
-        # sigmasq.shape = (n_var, n_permut)
-        # pcov.shape = (n_permut, n_var)
-        popt = np.tensordot(invXTXaXT, Y, axes = (2, 0))
-        # below is the same as: np.square(X @ popt - Y).sum(1) / self.actual_dof
-        # but can process with lower memory
-        sigmasq = []
-        for i in range(X.shape[0]):
-            sigmasq.append(np.square(X[i] @ popt[i] - Y).sum(0) / self.actual_dof)
-        pcov = np.array(sigmasq).T * np.squeeze(invXTX)
-        F = np.max((popt / np.sqrt(pcov.T.reshape(*popt.shape))) ** 2, axis = 0)
+    # Returns minimum P across variants.
+    def ols_f(self, Y, n_chunk = 5000):
+        '''
+        Func ols_core() is the same as:
+            popt = np.tensordot(invXTXaXT, Y, axes = (2, 0))  # shape (n_var, 1, n_permut)
+            sigmasq = np.square(X @ popt - Y).sum(1) / self.actual_dof  # shape (n_var, n_permut)
+            pcov = np.array(sigmasq).T * np.squeeze(invXTX)  # shape (n_permut, n_var)
+            F = np.max((popt / np.sqrt(pcov.T.reshape(*popt.shape))) ** 2, axis = 0)
+        but can process with lower memory
+        '''
+        F = self.ols_core(self.n_var, Y.shape[1], *self.reshaped_X, Y, self.actual_dof, n_chunk)
         P = st.f.sf(F, 1, self.actual_dof)
         return P
     
@@ -78,7 +96,7 @@ class BetaApproximation():
         self.empirical_p = st.beta.cdf(self.nominal_p, self.a, self.b)
     
     def calc_nominal_p(self):
-        self.nominal_p = self.ols_f(self.Y)
+        self.nominal_p = self.ols_f(self.Y)[0]
     
     def calc_permut_p(self):
         index = np.arange(self.Y.shape[0])
@@ -87,7 +105,7 @@ class BetaApproximation():
             permut_Y = self.Y[np.random.permutation(index)]
             permut_Ys.append(permut_Y)
         permut_Ys = np.hstack(permut_Ys)
-        self.min_ps = self.ols_f(permut_Ys)[0]
+        self.min_ps = self.ols_f(permut_Ys)
     
     def print_result(self):
         text = ''
@@ -118,7 +136,7 @@ class BetaApproximation():
 
 
 if __name__ == '__main__':
-    # 10 SNVs, AF = 0.5, n_sample = 40
+    # 11000 SNVs, AF = 0.5, n_sample = 40
     X = []
     for _ in range(3000):
         X.append([
