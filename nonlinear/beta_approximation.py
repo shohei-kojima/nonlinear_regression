@@ -45,7 +45,7 @@ class BetaApproximation():
         # X.shape = (n_var, n_indiv, 1)
         # invXTX.shape = (n_var)
         # invXTXaXT.shape = (n_var, 1, n_indiv)
-        F = np.zeros((n_chunk, n_permut))
+        F = np.zeros((n_chunk + 1, n_permut))
         for i in range(n_var):
             mod = i % n_chunk
             popt = invXTXaXT[i] @ Y
@@ -138,20 +138,20 @@ class BetaApproximation():
 if __name__ == '__main__':
     # 11000 SNVs, AF = 0.5, n_sample = 40
     X = []
-    for _ in range(3000):
+    for _ in range(10000):
         X.append([
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
             2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
-        ])
-    for _ in range(8000):
+        ] * 3)
+    for _ in range(10000):
         X.append([
             0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0,
             1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0,
             0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0,
             1.0, 2.0, 0.0, 1.0, 1.0, 2.0, 0.0, 1.0, 1.0, 2.0,
-        ])
+        ] * 3)
     X = np.array(X).T
     
     # phenotype
@@ -167,7 +167,7 @@ if __name__ == '__main__':
         38.67088324, 33.84130313, 32.0166378 , 35.56389366, 44.34117487,
         43.95291086, 40.36335334, 31.26123478, 32.83810509, 40.30713615,
         37.40358288, 41.94864552, 46.45253714, 29.86020523, 44.65659903,
-    ]
+    ] * 3
     Y = np.array(Y).reshape(-1, 1)
 
     C = np.random.normal(0, 0.1, X.shape[0]).reshape(-1, 1)
