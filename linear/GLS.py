@@ -6,12 +6,14 @@ Author: Shohei Kojima @ RIKEN
 
 import numpy as np
 import scipy.stats as st
+from scipy.linalg import cholesky
+from scipy.linalg.lapack import dtrtri
 
 
 # just a memo
-def lm_statsmodels(X, Y):
+def lm_statsmodels(X, Y, sigma):
     import statsmodels.api as sm
-    res = sm.OLS(Y, X).fit()
+    res = sm.GLS(Y, X, sigma = sigma).fit()
     pred = res.get_prediction().summary_frame(0.05)
     print(res.summary())
     print(pred)
@@ -53,15 +55,26 @@ def lm_linalg(X, Y):
     '''
 
 
-class OLS():
+class GLS():
     def __init__(self):
+        self.X_orig = None
+        self.Y_orig = None
         self.X = None
         self.Y = None
+        self.sigma = None  # cov matrix of Y
+        self.cholsigmainv = None
         self.popt = None
         self.pcov = None
         self.dof = None
         self.F = None
         self.P = None
+    
+    @staticmethod
+    def _dtrtri(sigma):
+        cholsigmainv, info = dtrtri(
+            cholesky(sigma, lower = True), lower = True, overwrite_c = True,
+        )
+        return cholsigmainv
     
     def pred_ci(self, X = None, alpha = 0.05):
         if X is None:
@@ -119,9 +132,13 @@ class OLS():
         self.F = F
         self.P = P
     
-    def fit(self, X, Y):
-        self.X = X
-        self.Y = Y
+    def fit(self, X, Y, sigma):
+        self.X_orig = X
+        self.Y_orig = Y
+        self.sigma = sigma
+        self.cholsigmainv = self._dtrtri(sigma)
+        self.X = self.cholsigmainv @ X
+        self.Y = self.cholsigmainv @ Y
         self.ols()  # alternatively, self.qr_decomposition()
     
     # when only X.shape[1] == 2
@@ -129,9 +146,9 @@ class OLS():
         import seaborn as sns
         import matplotlib
         import matplotlib.pyplot as plt
-        if self.X.shape[1] != 2:
+        if self.X_orig.shape[1] != 2:
             return
-        gridX = np.linspace(self.X[:,1].min(), self.X[:,1].max(), n_grid)
+        gridX = np.linspace(self.X_orig[:,1].min(), self.X_orig[:,1].max(), n_grid)
         gridX = np.hstack((np.ones((n_grid, 1)), np.array([gridX]).T))
         pred_ci_lower, pred_ci_upper = self.pred_ci(gridX)
         obs_ci_lower, obs_ci_upper = self.obs_ci(gridX)
@@ -143,10 +160,16 @@ class OLS():
             gridX[:,1], obs_ci_lower[0],  obs_ci_upper[0],
             alpha=.1, label='Obs_CI', fc = 'tab:blue',
         )
-        plt.plot(gridX[:,1], gridX @ self.popt, color = 'orange', alpha = 0.5)
+        plt.plot(self.X_orig[:,1], self.X_orig @ self.popt, color = 'orange', alpha = 0.5)
+        for i in range(self.sigma.shape[0]):
+            plt.plot(
+                [self.X_orig[i,1], self.X_orig[i,1]],
+                [self.Y_orig[i,0] + self.sigma[i,i], self.Y_orig[i,0] - self.sigma[i,i]],
+                color = 'tab:blue', alpha = 0.5,
+            )
         sns.scatterplot(
-            x = self.X[:,1].T,
-            y = self.Y.T[0],
+            x = self.X_orig[:,1].T,
+            y = self.Y_orig.T[0],
             alpha = 0.5,
             color = 'tab:blue',
             edgecolor = None,
@@ -155,12 +178,12 @@ class OLS():
         '''
         # if want to check concordance with statsmodels
         import statsmodels.api as sm
-        res = sm.OLS(self.Y, self.X).fit()
+        res = sm.GLS(self.Y_orig, self.X_orig, self.sigma).fit()
         pred = res.get_prediction().summary_frame(0.05)
-        plt.plot(self.X[:,1], pred['obs_ci_lower'], color = 'k')
-        plt.plot(self.X[:,1], pred['obs_ci_upper'], color = 'k')
-        plt.plot(self.X[:,1], pred['mean_ci_lower'], color = 'k')
-        plt.plot(self.X[:,1], pred['mean_ci_upper'], color = 'k')
+        plt.plot(self.X_orig[:,1], pred['obs_ci_lower'], color = 'k')
+        plt.plot(self.X_orig[:,1], pred['obs_ci_upper'], color = 'k')
+        plt.plot(self.X_orig[:,1], pred['mean_ci_lower'], color = 'k')
+        plt.plot(self.X_orig[:,1], pred['mean_ci_upper'], color = 'k')
         '''
         plt.savefig(outfilename)
         plt.close()
@@ -169,15 +192,18 @@ class OLS():
 if __name__ == '__main__':
     X = np.array([[1, 1, 1, 1], [2, 3, 5, 6], [4, 6, 3, 5]]).T
     Y = np.array([[4, 7, 8, 10]]).T
-    model = OLS()
-    model.fit(X, Y)
+    sigma = np.diag(np.array([0.5, 4, 0.5, 0.5]))
+    model = GLS()
+    model.fit(X, Y, sigma)
     print(model.popt)
     print(model.pcov)
     
     X = np.array([[1, 1, 1, 1], [2, 3, 5, 6]]).T
     Y = np.array([[4, 7, 8, 10]]).T
-    model = OLS()
-    model.fit(X, Y)
-    model.plot('plot.OLS.pdf')
+    sigma = np.diag(np.array([0.5, 4, 0.5, 0.5]))  # same as WLS
+    model = GLS()
+    model.fit(X, Y, sigma)
+    model.plot('plot.GLS.pdf')
     print(model.popt)
     print(model.pcov)
+
