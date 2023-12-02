@@ -6,8 +6,6 @@ Author: Shohei Kojima @ RIKEN
 
 import numpy as np
 import scipy.stats as st
-from scipy.linalg import cholesky
-from scipy.linalg.lapack import dtrtri
 
 
 # just a memo
@@ -70,11 +68,9 @@ class GLS():
         self.P = None
     
     @staticmethod
-    def _dtrtri(sigma):
-        cholsigmainv, info = dtrtri(
-            cholesky(sigma, lower = True), lower = True, overwrite_c = True,
-        )
-        return cholsigmainv
+    def cholesky_inv(sigma):
+        # returns lower triangle
+        return np.linalg.inv(np.linalg.cholesky(sigma))
     
     def pred_ci(self, X = None, alpha = 0.05):
         if X is None:
@@ -136,7 +132,7 @@ class GLS():
         self.X_orig = X
         self.Y_orig = Y
         self.sigma = sigma
-        self.cholsigmainv = self._dtrtri(sigma)
+        self.cholsigmainv = self.cholesky_inv(sigma)
         self.X = self.cholsigmainv @ X
         self.Y = self.cholsigmainv @ Y
         self.ols()  # alternatively, self.qr_decomposition()

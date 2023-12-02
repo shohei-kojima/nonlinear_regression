@@ -8,7 +8,6 @@ import os
 os.environ['OMP_NUM_THREADS'] = '1'
 import numpy as np
 import scipy.stats as st
-from numba import jit
 
 
 class BetaApproximation():
@@ -16,7 +15,9 @@ class BetaApproximation():
         self.X = None
         self.Y = None
         self.n_var = None
+        self.n_indiv = None
         self.n_permut = None
+        self.n_chunk = None
         self.reshaped_X = None
         self.actual_dof = None
         self.nominal_p = None
@@ -36,32 +37,73 @@ class BetaApproximation():
             Xs.append(X)
             invXTXs.append(invXTX)
             invXTXaXTs.append(invXTXaXT)
-        t = (np.array(Xs), np.squeeze(np.array(invXTXs)), np.array(invXTXaXTs))
+        t = (np.array(Xs), np.squeeze(np.array(invXTXs), axis = 2), np.array(invXTXaXTs))
         self.reshaped_X = t
     
+    # slightly slower than ols_core(), but more memory efficient
     @staticmethod
-    @jit('f8[:](i8,i8,f8[:,:,:],f8[:],f8[:,:,:],f8[:,:],i8,i8)', nopython = True)
-    def ols_core(n_var, n_permut, X, invXTX, invXTXaXT, Y, dof, n_chunk):
+    def ols_core_single(n_var, n_permut, X, invXTX, invXTXaXT, Y, dof, n_chunk):
         # X.shape = (n_var, n_indiv, 1)
-        # invXTX.shape = (n_var)
+        # invXTX.shape = (n_var, 1)
         # invXTXaXT.shape = (n_var, 1, n_indiv)
         F = np.zeros((n_chunk + 1, n_permut))
         for i in range(n_var):
             mod = i % n_chunk
             popt = invXTXaXT[i] @ Y
-            sigmasq = np.square(X[i] @ popt - Y).sum(0) / dof
-            F[mod+1,:] = np.square(popt[0,:] / np.sqrt(sigmasq * invXTX[i]))
+            F[mod+1,:] = np.square(popt[0,:] / (np.linalg.norm(X[i] @ popt - Y, axis = 0) * np.sqrt(invXTX[i])))
             if mod == 0:
                 for j in range(n_permut):
                     F[0,j] = np.max(F[:,j])
         for j in range(n_permut):
             F[0,j] = np.max(F[:,j])
-        return F[0]
+        return F[0] * dof
+    
+    # chunking over variants (more stable in terms of memory usage)
+    def ols_core(self, Y):
+        # X.shape = (n_var, n_indiv, 1)
+        # invXTX.shape = (n_var, 1)
+        # invXTXaXT.shape = (n_var, 1, n_indiv)
+        X, invXTX, invXTXaXT = self.reshaped_X
+        invXTX = np.sqrt(invXTX)
+        F = []
+        n_iter = np.ceil(self.n_var / self.n_chunk).astype(int)
+        for i in range(n_iter):
+            s = i * self.n_chunk
+            e = np.min(((i+1) * self.n_chunk, self.n_var))
+            popt = np.tensordot(invXTXaXT[s:e], Y, axes = (2, 0))
+            _F = np.max(
+                np.square(popt.reshape(popt.shape[::2]) / (np.linalg.norm(X[s:e] @ popt - Y, axis = 1) * invXTX[s:e])),
+                axis = 0,
+            )
+            F.append(_F)
+        F = np.max(np.array(F), axis = 0) * self.actual_dof
+        return F
+    
+    # chunking over permutation
+    def _ols_core(self, Y):
+        # X.shape = (n_var, n_indiv, 1)
+        # invXTX.shape = (n_var, 1)
+        # invXTXaXT.shape = (n_var, 1, n_indiv)
+        X, invXTX, invXTXaXT = self.reshaped_X
+        invXTX = np.sqrt(invXTX)
+        F = []
+        n_iter = np.ceil(Y.shape[1] / self.n_chunk).astype(int)
+        for i in range(n_iter):
+            s = i * self.n_chunk
+            e = np.min(((i+1) * self.n_chunk, Y.shape[1]))
+            popt = np.tensordot(invXTXaXT, Y[:,s:e], axes = (2, 0))
+            _F = np.max(
+                np.square(popt.reshape(popt.shape[::2]) / (np.linalg.norm(X @ popt - Y[:,s:e], axis = 1) * invXTX)),
+                axis = 0,
+            )
+            F.append(_F)
+        F = np.array(F).flatten() * self.actual_dof
+        return F
     
     # Func specific for Y ~ X without intercept,
     # where X.shape = (n_var, n_indiv, 1); Y.shape = (n_indiv, n_permut).
     # Returns minimum P across variants.
-    def ols_f(self, Y, n_chunk = 5000):
+    def ols_f(self, Y):
         '''
         Func ols_core() is the same as:
             popt = np.tensordot(invXTXaXT, Y, axes = (2, 0))  # shape (n_var, 1, n_permut)
@@ -70,7 +112,7 @@ class BetaApproximation():
             F = np.max((popt / np.sqrt(pcov.T.reshape(*popt.shape))) ** 2, axis = 0)
         but can process with lower memory
         '''
-        F = self.ols_core(self.n_var, Y.shape[1], *self.reshaped_X, Y, self.actual_dof, n_chunk)
+        F = self.ols_core(Y)
         P = st.f.sf(F, 1, self.actual_dof)
         return P
     
@@ -109,7 +151,7 @@ class BetaApproximation():
     
     def print_result(self):
         text = ''
-        text += 'n_var = %d, n_indiv = %d\n' % (self.n_var, self.Y.shape[0])
+        text += 'n_var = %d, n_indiv = %d\n' % (self.n_var, self.n_indiv)
         text += 'Params: a = %.4f, b = %.4f\n' % (self.a, self.b)
         text += 'Nominal   P: %.10f (non-corrected)\n' % self.nominal_p
         text += 'Nominal   P: %.10f (Bonferroni corrected)\n' % (min(self.nominal_p * self.n_var, 1.0))
@@ -119,12 +161,14 @@ class BetaApproximation():
     # X: Genotypes, ranging from 0 to 2; shape = (n_indiv, n_var)
     # Y: Phenotype, shape = (n_indiv, 1)
     # C: Covariates, shape = (n_indiv, n_cov)
-    def beta_approximation(self, X, Y, C, n_permut = 10000):
+    def beta_approximation(self, X, Y, C, n_permut = 10000, n_chunk = 100):
+        self.n_chunk = n_chunk
         self.n_permut = n_permut
         X = st.zscore(X, axis = 0)
         Y = st.zscore(self.residual(C, Y))
         self.X = X
         self.Y = Y
+        self.n_indiv = self.X.shape[0]
         self.n_var = self.X.shape[1]
         self.actual_dof = X.shape[0] - C.shape[1] - 1
         self.reshape_X()
